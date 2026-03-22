@@ -1187,8 +1187,8 @@ async fn fork_startup_context_then_first_turn_diff_snapshot() {
             .map(|(idx, item)| match item {
                 ResponseItem::Message { role, .. } => format!("{idx:02}:message/{role}"),
                 other => {
-                    let item_type = serde_json::to_value(other)
-                        .expect("serialize snapshot item")
+                    let item = serde_json::to_value(other).expect("serialize snapshot item");
+                    let item_type = item
                         .get("type")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("<missing_type>");
