@@ -140,8 +140,8 @@ async fn device_code_login_integration_succeeds() -> anyhow::Result<()> {
         .expect("device code login integration should succeed");
 
     let auth = load_auth_dot_json(codex_home.path(), AuthCredentialsStoreMode::File)
-        .context("auth.json should load after login succeeds")?
-        .context("auth.json written")?;
+        .context("auth should load after login succeeds")?
+        .context("auth written")?;
     // assert_eq!(auth.openai_api_key.as_deref(), Some("api-key-321"));
     let tokens = auth.tokens.expect("tokens persisted");
     assert_eq!(tokens.access_token, "access-token-123");
@@ -181,10 +181,10 @@ async fn device_code_login_rejects_workspace_mismatch() -> anyhow::Result<()> {
     assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
 
     let auth = load_auth_dot_json(codex_home.path(), AuthCredentialsStoreMode::File)
-        .context("auth.json should load after login fails")?;
+        .context("auth should load after login fails")?;
     assert!(
         auth.is_none(),
-        "auth.json should not be created when workspace validation fails"
+        "auth should not be created when workspace validation fails"
     );
     Ok(())
 }
@@ -212,10 +212,10 @@ async fn device_code_login_integration_handles_usercode_http_failure() -> anyhow
     );
 
     let auth = load_auth_dot_json(codex_home.path(), AuthCredentialsStoreMode::File)
-        .context("auth.json should load after login fails")?;
+        .context("auth should load after login fails")?;
     assert!(
         auth.is_none(),
-        "auth.json should not be created when login fails"
+        "auth should not be created when login fails"
     );
     Ok(())
 }
@@ -253,8 +253,8 @@ async fn device_code_login_integration_persists_without_api_key_on_exchange_fail
         .expect("device login should succeed without API key exchange");
 
     let auth = load_auth_dot_json(codex_home.path(), AuthCredentialsStoreMode::File)
-        .context("auth.json should load after login succeeds")?
-        .context("auth.json written")?;
+        .context("auth should load after login succeeds")?
+        .context("auth written")?;
     assert!(auth.openai_api_key.is_none());
     let tokens = auth.tokens.expect("tokens persisted");
     assert_eq!(tokens.access_token, "access-token-123");
@@ -309,10 +309,10 @@ async fn device_code_login_integration_handles_error_payload() -> anyhow::Result
     );
 
     let auth = load_auth_dot_json(codex_home.path(), AuthCredentialsStoreMode::File)
-        .context("auth.json should load after login fails")?;
+        .context("auth should load after login fails")?;
     assert!(
         auth.is_none(),
-        "auth.json should not be created when device auth fails"
+        "auth should not be created when device auth fails"
     );
     Ok(())
 }

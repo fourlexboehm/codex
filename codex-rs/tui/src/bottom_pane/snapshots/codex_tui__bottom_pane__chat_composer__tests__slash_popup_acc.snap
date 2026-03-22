@@ -1,0 +1,10 @@
+---
+source: tui/src/bottom_pane/chat_composer.rs
+expression: terminal.backend()
+---
+"                                                            "
+"› /acc                                                      "
+"                                                            "
+"                                                            "
+"  /account  list saved accounts and switch the active auth  "
+"            file                                            "

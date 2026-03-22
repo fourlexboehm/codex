@@ -988,6 +988,25 @@
       ],
       "type": "object"
     },
+    "ListAccountsParams": {
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ListMcpServerStatusParams": {
       "properties": {
         "cursor": {
@@ -2396,6 +2415,17 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "SwitchAccountParams": {
+      "properties": {
+        "accountId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountId"
+      ],
       "type": "object"
     },
     "TextElement": {
@@ -4352,6 +4382,30 @@
         },
         "method": {
           "enum": [
+            "account/list"
+          ],
+          "title": "Account/listRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ListAccountsParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Account/listRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
             "account/logout"
           ],
           "title": "Account/logoutRequestMethod",
@@ -4366,6 +4420,30 @@
         "method"
       ],
       "title": "Account/logoutRequest",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "account/switch"
+          ],
+          "title": "Account/switchRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/SwitchAccountParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Account/switchRequest",
       "type": "object"
     },
     {

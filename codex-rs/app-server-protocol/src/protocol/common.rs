@@ -438,9 +438,19 @@ client_request_definitions! {
         response: v2::CancelLoginAccountResponse,
     },
 
+    ListAccounts => "account/list" {
+        params: v2::ListAccountsParams,
+        response: v2::ListAccountsResponse,
+    },
+
     LogoutAccount => "account/logout" {
         params: #[ts(type = "undefined")] #[serde(skip_serializing_if = "Option::is_none")] Option<()>,
         response: v2::LogoutAccountResponse,
+    },
+
+    SwitchAccount => "account/switch" {
+        params: v2::SwitchAccountParams,
+        response: v2::SwitchAccountResponse,
     },
 
     GetAccountRateLimits => "account/rateLimits/read" {
@@ -1336,9 +1346,32 @@ mod tests {
     }
 
     #[test]
+    fn serialize_account_list() -> Result<()> {
+        let request = ClientRequest::ListAccounts {
+            request_id: RequestId::Integer(5),
+            params: v2::ListAccountsParams {
+                cursor: Some("2".to_string()),
+                limit: Some(10),
+            },
+        };
+        assert_eq!(
+            json!({
+                "method": "account/list",
+                "id": 5,
+                "params": {
+                    "cursor": "2",
+                    "limit": 10
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
     fn serialize_account_login_chatgpt_auth_tokens() -> Result<()> {
         let request = ClientRequest::LoginAccount {
-            request_id: RequestId::Integer(5),
+            request_id: RequestId::Integer(6),
             params: v2::LoginAccountParams::ChatgptAuthTokens {
                 access_token: "access-token".to_string(),
                 chatgpt_account_id: "org-123".to_string(),
@@ -1348,12 +1381,33 @@ mod tests {
         assert_eq!(
             json!({
                 "method": "account/login/start",
-                "id": 5,
+                "id": 6,
                 "params": {
                     "type": "chatgptAuthTokens",
                     "accessToken": "access-token",
                     "chatgptAccountId": "org-123",
                     "chatgptPlanType": "business"
+                }
+            }),
+            serde_json::to_value(&request)?,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_account_switch() -> Result<()> {
+        let request = ClientRequest::SwitchAccount {
+            request_id: RequestId::Integer(7),
+            params: v2::SwitchAccountParams {
+                account_id: "auth-20260322.json".to_string(),
+            },
+        };
+        assert_eq!(
+            json!({
+                "method": "account/switch",
+                "id": 7,
+                "params": {
+                    "accountId": "auth-20260322.json"
                 }
             }),
             serde_json::to_value(&request)?,

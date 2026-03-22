@@ -8,6 +8,8 @@ use codex_app_server_protocol::GetAccountParams;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::GetAccountResponse;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::ListAccountsParams;
+use codex_app_server_protocol::ListAccountsResponse;
 use codex_app_server_protocol::Model as ApiModel;
 use codex_app_server_protocol::ModelListParams;
 use codex_app_server_protocol::ModelListResponse;
@@ -17,6 +19,8 @@ use codex_app_server_protocol::ReviewStartParams;
 use codex_app_server_protocol::ReviewStartResponse;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
+use codex_app_server_protocol::SwitchAccountParams;
+use codex_app_server_protocol::SwitchAccountResponse;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanParams;
 use codex_app_server_protocol::ThreadBackgroundTerminalsCleanResponse;
@@ -268,6 +272,70 @@ impl AppServerSession {
 
     pub(crate) async fn next_event(&mut self) -> Option<AppServerEvent> {
         self.client.next_event().await
+    }
+
+    pub(crate) async fn get_account(&mut self, refresh_token: bool) -> Result<GetAccountResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::GetAccount {
+                request_id,
+                params: GetAccountParams { refresh_token },
+            })
+            .await
+            .wrap_err("account/read failed in app-server TUI")
+    }
+
+    pub(crate) async fn get_account_rate_limits(&mut self) -> Result<GetAccountRateLimitsResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::GetAccountRateLimits {
+                request_id,
+                params: None,
+            })
+            .await
+            .wrap_err("account/rateLimits/read failed in app-server TUI")
+    }
+
+    pub(crate) async fn list_accounts(&mut self) -> Result<ListAccountsResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ListAccounts {
+                request_id,
+                params: ListAccountsParams {
+                    cursor: None,
+                    limit: None,
+                },
+            })
+            .await
+            .wrap_err("account/list failed in app-server TUI")
+    }
+
+    pub(crate) async fn switch_account(&mut self, account_id: String) -> Result<()> {
+        let request_id = self.next_request_id();
+        let _: SwitchAccountResponse = self
+            .client
+            .request_typed(ClientRequest::SwitchAccount {
+                request_id,
+                params: SwitchAccountParams { account_id },
+            })
+            .await
+            .wrap_err("account/switch failed in app-server TUI")?;
+        Ok(())
+    }
+
+    pub(crate) async fn model_list(&mut self, include_hidden: bool) -> Result<ModelListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::ModelList {
+                request_id,
+                params: ModelListParams {
+                    cursor: None,
+                    limit: None,
+                    include_hidden: Some(include_hidden),
+                },
+            })
+            .await
+            .wrap_err("model/list failed in app-server TUI")
     }
 
     pub(crate) async fn start_thread(&mut self, config: &Config) -> Result<AppServerStartedThread> {
@@ -716,6 +784,19 @@ pub(crate) fn status_account_display_from_auth_mode(
     }
 }
 
+pub(crate) fn status_account_display_from_account(
+    account: Option<&Account>,
+) -> Option<StatusAccountDisplay> {
+    match account {
+        Some(Account::ApiKey {}) => Some(StatusAccountDisplay::ApiKey),
+        Some(Account::Chatgpt { email, plan_type }) => Some(StatusAccountDisplay::ChatGpt {
+            email: Some(email.clone()),
+            plan: Some(title_case(format!("{plan_type:?}").as_str())),
+        }),
+        None => None,
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) fn feedback_audience_from_account_email(
     account_email: Option<&str>,
@@ -726,7 +807,7 @@ pub(crate) fn feedback_audience_from_account_email(
     }
 }
 
-fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
+pub(crate) fn model_preset_from_api_model(model: ApiModel) -> ModelPreset {
     let upgrade = model.upgrade.map(|upgrade_id| {
         let upgrade_info = model.upgrade_info.clone();
         ModelUpgrade {
@@ -1029,7 +1110,7 @@ async fn thread_session_state_from_thread_response(
     })
 }
 
-fn app_server_rate_limit_snapshots_to_core(
+pub(crate) fn app_server_rate_limit_snapshots_to_core(
     response: GetAccountRateLimitsResponse,
 ) -> Vec<RateLimitSnapshot> {
     let mut snapshots = Vec::new();

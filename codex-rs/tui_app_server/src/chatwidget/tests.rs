@@ -19,6 +19,7 @@ use crate::model_catalog::ModelCatalog;
 use crate::test_backend::VT100Backend;
 use crate::tui::FrameRequester;
 use assert_matches::assert_matches;
+use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::CollabAgentState as AppServerCollabAgentState;
 use codex_app_server_protocol::CollabAgentStatus as AppServerCollabAgentStatus;
 use codex_app_server_protocol::CollabAgentTool as AppServerCollabAgentTool;
@@ -34,6 +35,7 @@ use codex_app_server_protocol::ItemGuardianApprovalReviewStartedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::PatchApplyStatus as AppServerPatchApplyStatus;
 use codex_app_server_protocol::PatchChangeKind;
+use codex_app_server_protocol::SavedAccount;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ThreadClosedNotification;
 use codex_app_server_protocol::ThreadItem as AppServerThreadItem;
@@ -6241,6 +6243,44 @@ async fn collab_slash_command_opens_picker_and_updates_mode() {
             panic!("expected Op::UserTurn with code collab mode, got {other:?}")
         }
     }
+}
+
+#[tokio::test]
+async fn account_slash_command_emits_open_account_picker_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.dispatch_command(SlashCommand::Account);
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenAccountPicker));
+}
+
+#[tokio::test]
+async fn account_picker_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.open_account_picker(&[
+        SavedAccount {
+            id: "auth-20260322T040506Z-cafebabe.json".to_string(),
+            is_current: true,
+            auth_mode: AuthMode::Chatgpt,
+            email: Some("current@example.com".to_string()),
+            workspace_id: Some("org-current".to_string()),
+            plan_type: Some(PlanType::Pro),
+            api_key_suffix: None,
+        },
+        SavedAccount {
+            id: "auth-20260322T010203Z-deadbeef.json".to_string(),
+            is_current: false,
+            auth_mode: AuthMode::ApiKey,
+            email: None,
+            workspace_id: None,
+            plan_type: None,
+            api_key_suffix: Some("1234".to_string()),
+        },
+    ]);
+
+    let popup = render_bottom_popup(&chat, 100);
+    assert_snapshot!("account_picker_popup", popup);
 }
 
 #[tokio::test]

@@ -323,6 +323,7 @@ use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
 mod interrupts;
 use self::interrupts::InterruptManager;
+mod account_picker;
 mod session_header;
 use self::session_header::SessionHeader;
 mod skills;
@@ -341,6 +342,7 @@ use crate::streaming::controller::PlanStreamController;
 use crate::streaming::controller::StreamController;
 
 use chrono::Local;
+use codex_app_server_protocol::SavedAccount;
 use codex_file_search::FileMatch;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelPreset;
@@ -4527,6 +4529,10 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn open_account_picker(&mut self, accounts: &[SavedAccount]) {
+        self.show_selection_view(account_picker::build_account_picker_params(accounts));
+    }
+
     pub(crate) fn no_modal_or_popup_active(&self) -> bool {
         self.bottom_pane.no_modal_or_popup_active()
     }
@@ -4831,6 +4837,9 @@ impl ChatWidget {
             }
             SlashCommand::Plugins => {
                 self.add_plugins_output();
+            }
+            SlashCommand::Account => {
+                self.app_event_tx.send(AppEvent::OpenAccountPicker);
             }
             SlashCommand::Rollout => {
                 if let Some(path) = self.rollout_path() {
@@ -9112,6 +9121,10 @@ impl ChatWidget {
         self.model_catalog.clone()
     }
 
+    pub(crate) fn set_model_catalog(&mut self, model_catalog: Arc<ModelCatalog>) {
+        self.model_catalog = model_catalog;
+    }
+
     pub(crate) fn current_plan_type(&self) -> Option<PlanType> {
         self.plan_type
     }
@@ -9131,6 +9144,11 @@ impl ChatWidget {
         self.has_chatgpt_account = has_chatgpt_account;
         self.bottom_pane
             .set_connectors_enabled(self.connectors_enabled());
+    }
+
+    pub(crate) fn refresh_after_account_switch(&mut self) {
+        self.on_rate_limit_snapshot(/*snapshot*/ None);
+        self.refresh_connectors(/*force_refetch*/ true);
     }
 
     pub(crate) fn should_show_fast_status(

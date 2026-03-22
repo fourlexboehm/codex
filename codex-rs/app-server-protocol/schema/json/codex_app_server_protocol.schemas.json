@@ -1249,6 +1249,30 @@
             },
             "method": {
               "enum": [
+                "account/list"
+              ],
+              "title": "Account/listRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/ListAccountsParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Account/listRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
                 "account/logout"
               ],
               "title": "Account/logoutRequestMethod",
@@ -1263,6 +1287,30 @@
             "method"
           ],
           "title": "Account/logoutRequest",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "account/switch"
+              ],
+              "title": "Account/switchRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/SwitchAccountParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Account/switchRequest",
           "type": "object"
         },
         {
@@ -8269,6 +8317,49 @@
         "title": "ItemStartedNotification",
         "type": "object"
       },
+      "ListAccountsParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "ListAccountsParams",
+        "type": "object"
+      },
+      "ListAccountsResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/definitions/v2/SavedAccount"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "ListAccountsResponse",
+        "type": "object"
+      },
       "ListMcpServerStatusParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -11093,6 +11184,53 @@
         },
         "type": "object"
       },
+      "SavedAccount": {
+        "properties": {
+          "apiKeySuffix": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authMode": {
+            "$ref": "#/definitions/v2/AuthMode"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "isCurrent": {
+            "type": "boolean"
+          },
+          "planType": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/PlanType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workspaceId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "authMode",
+          "id",
+          "isCurrent"
+        ],
+        "type": "object"
+      },
       "ServerRequestResolvedNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
@@ -11591,6 +11729,24 @@
             "type": "object"
           }
         ]
+      },
+      "SwitchAccountParams": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "accountId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "accountId"
+        ],
+        "title": "SwitchAccountParams",
+        "type": "object"
+      },
+      "SwitchAccountResponse": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "SwitchAccountResponse",
+        "type": "object"
       },
       "TerminalInteractionNotification": {
         "$schema": "http://json-schema.org/draft-07/schema#",

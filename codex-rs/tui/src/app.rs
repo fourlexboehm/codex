@@ -1900,6 +1900,40 @@ impl App {
         });
     }
 
+    async fn open_account_picker(&mut self) {
+        match self.auth_manager.list_saved_accounts() {
+            Ok(accounts) => {
+                if accounts.is_empty() {
+                    self.chat_widget.add_info_message(
+                        "No saved accounts found.".to_string(),
+                        /*hint*/ None,
+                    );
+                    return;
+                }
+
+                self.chat_widget.open_account_picker(accounts.as_slice());
+            }
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to list saved accounts: {err}"));
+            }
+        }
+    }
+
+    fn switch_auth_account(&mut self, account_id: String) {
+        match self.auth_manager.switch_saved_account(&account_id) {
+            Ok(changed) => {
+                if changed {
+                    self.chat_widget.refresh_auth_state();
+                }
+            }
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to switch account: {err}"));
+            }
+        }
+    }
+
     /// Updates cached picker metadata and then mirrors any visible-label change into the footer.
     ///
     /// These two writes stay paired so the picker rows and contextual footer continue to describe
@@ -3751,8 +3785,14 @@ impl App {
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker().await;
             }
+            AppEvent::OpenAccountPicker => {
+                self.open_account_picker().await;
+            }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread(tui, thread_id).await?;
+            }
+            AppEvent::SwitchAuthAccount { account_id } => {
+                self.switch_auth_account(account_id);
             }
             AppEvent::OpenSkillsList => {
                 self.chat_widget.open_skills_list();

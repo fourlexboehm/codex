@@ -21,14 +21,17 @@ use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::ListAccountsResponse;
 use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::LogoutAccountResponse;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::SwitchAccountResponse;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStatus;
 use codex_core::auth::AuthCredentialsStoreMode;
+use codex_login::load_auth_dot_json;
 use codex_login::login_with_api_key;
 use codex_protocol::account::PlanType as AccountPlanType;
 use core_test_support::responses;
@@ -98,6 +101,13 @@ stream_max_retries = 0
     std::fs::write(config_toml, contents)
 }
 
+fn assert_saved_account_id(account_id: &str) {
+    assert!(
+        account_id.starts_with("auth-") && account_id.ends_with(".json"),
+        "expected saved auth file name, got {account_id}"
+    );
+}
+
 #[tokio::test]
 async fn logout_account_removes_auth_and_notifies() -> Result<()> {
     let codex_home = TempDir::new()?;
@@ -108,7 +118,7 @@ async fn logout_account_removes_auth_and_notifies() -> Result<()> {
         "sk-test-key",
         AuthCredentialsStoreMode::File,
     )?;
-    assert!(codex_home.path().join("auth.json").exists());
+    assert!(load_auth_dot_json(codex_home.path(), AuthCredentialsStoreMode::File)?.is_some());
 
     let mut mcp = McpProcess::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
@@ -137,8 +147,8 @@ async fn logout_account_removes_auth_and_notifies() -> Result<()> {
     assert_eq!(payload.plan_type, None);
 
     assert!(
-        !codex_home.path().join("auth.json").exists(),
-        "auth.json should be deleted"
+        load_auth_dot_json(codex_home.path(), AuthCredentialsStoreMode::File)?.is_none(),
+        "active auth should be deleted"
     );
 
     let get_id = mcp
@@ -850,7 +860,7 @@ async fn login_account_api_key_succeeds_and_notifies() -> Result<()> {
     pretty_assertions::assert_eq!(payload.auth_mode, Some(AuthMode::ApiKey));
     pretty_assertions::assert_eq!(payload.plan_type, None);
 
-    assert!(codex_home.path().join("auth.json").exists());
+    assert!(load_auth_dot_json(codex_home.path(), AuthCredentialsStoreMode::File)?.is_some());
     Ok(())
 }
 
@@ -1273,5 +1283,188 @@ async fn get_account_with_chatgpt_missing_plan_claim_returns_unknown() -> Result
         requires_openai_auth: true,
     };
     assert_eq!(received, expected);
+    Ok(())
+}
+
+#[tokio::test]
+async fn account_list_returns_current_and_archived_auth_files() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        CreateConfigTomlParams {
+            requires_openai_auth: Some(true),
+            ..Default::default()
+        },
+    )?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("access-chatgpt")
+            .email("user@example.com")
+            .plan_type("pro")
+            .chatgpt_account_id("org-chatgpt"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    login_with_api_key(
+        codex_home.path(),
+        "sk-current",
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let mut mcp = McpProcess::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let request_id = mcp.send_list_accounts_request(None, None).await?;
+    let response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let accounts: ListAccountsResponse = to_response(response)?;
+
+    assert_eq!(accounts.next_cursor, None);
+    assert_eq!(accounts.data.len(), 2);
+    assert_saved_account_id(&accounts.data[0].id);
+    assert_eq!(accounts.data[0].is_current, true);
+    assert_eq!(accounts.data[0].auth_mode, AuthMode::ApiKey);
+    assert_eq!(accounts.data[0].email, None);
+    assert_eq!(accounts.data[0].workspace_id, None);
+    assert_eq!(accounts.data[0].plan_type, None);
+    assert_eq!(accounts.data[0].api_key_suffix.as_deref(), Some("rent"));
+
+    let archived = &accounts.data[1];
+    assert_saved_account_id(&archived.id);
+    assert_eq!(archived.is_current, false);
+    assert_eq!(archived.auth_mode, AuthMode::Chatgpt);
+    assert_eq!(archived.email.as_deref(), Some("user@example.com"));
+    assert_eq!(archived.workspace_id.as_deref(), Some("org-chatgpt"));
+    assert_eq!(archived.plan_type, Some(AccountPlanType::Pro));
+    assert_eq!(archived.api_key_suffix, None);
+    assert_ne!(accounts.data[0].id, archived.id);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn account_switch_updates_active_auth_file_and_notifies() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    create_config_toml(
+        codex_home.path(),
+        CreateConfigTomlParams {
+            requires_openai_auth: Some(true),
+            ..Default::default()
+        },
+    )?;
+    write_chatgpt_auth(
+        codex_home.path(),
+        ChatGptAuthFixture::new("access-chatgpt")
+            .email("user@example.com")
+            .plan_type("pro")
+            .chatgpt_account_id("org-chatgpt"),
+        AuthCredentialsStoreMode::File,
+    )?;
+    login_with_api_key(
+        codex_home.path(),
+        "sk-current",
+        AuthCredentialsStoreMode::File,
+    )?;
+
+    let mut mcp = McpProcess::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let list_request_id = mcp.send_list_accounts_request(None, None).await?;
+    let list_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_request_id)),
+    )
+    .await??;
+    let accounts: ListAccountsResponse = to_response(list_response)?;
+    let archived_chatgpt = accounts
+        .data
+        .iter()
+        .find(|account| account.auth_mode == AuthMode::Chatgpt)
+        .expect("archived chatgpt account should exist")
+        .id
+        .clone();
+    assert_saved_account_id(&archived_chatgpt);
+
+    let switch_request_id = mcp
+        .send_switch_account_request(archived_chatgpt.clone())
+        .await?;
+    let switch_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(switch_request_id)),
+    )
+    .await??;
+    let response: SwitchAccountResponse = to_response(switch_response)?;
+    assert_eq!(response, SwitchAccountResponse {});
+
+    let note = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_notification_message("account/updated"),
+    )
+    .await??;
+    let parsed: ServerNotification = note.try_into()?;
+    let ServerNotification::AccountUpdated(payload) = parsed else {
+        bail!("unexpected notification: {parsed:?}");
+    };
+    assert_eq!(payload.auth_mode, Some(AuthMode::Chatgpt));
+    assert_eq!(payload.plan_type, Some(AccountPlanType::Pro));
+
+    let list_request_id = mcp.send_list_accounts_request(None, None).await?;
+    let list_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(list_request_id)),
+    )
+    .await??;
+    let switched_accounts: ListAccountsResponse = to_response(list_response)?;
+    assert_eq!(switched_accounts.next_cursor, None);
+    assert_eq!(switched_accounts.data.len(), 2);
+    assert_eq!(switched_accounts.data[0].id, archived_chatgpt);
+    assert_eq!(switched_accounts.data[0].auth_mode, AuthMode::Chatgpt);
+    assert!(switched_accounts.data[0].is_current);
+    assert_eq!(
+        switched_accounts.data[0].email.as_deref(),
+        Some("user@example.com")
+    );
+    assert_eq!(
+        switched_accounts.data[0].workspace_id.as_deref(),
+        Some("org-chatgpt")
+    );
+    assert_eq!(
+        switched_accounts.data[0].plan_type,
+        Some(AccountPlanType::Pro)
+    );
+
+    assert_saved_account_id(&switched_accounts.data[1].id);
+    assert_ne!(switched_accounts.data[1].id, switched_accounts.data[0].id);
+    assert_eq!(switched_accounts.data[1].auth_mode, AuthMode::ApiKey);
+    assert_eq!(
+        switched_accounts.data[1].api_key_suffix.as_deref(),
+        Some("rent")
+    );
+    assert!(!switched_accounts.data[1].is_current);
+
+    let get_request_id = mcp
+        .send_get_account_request(GetAccountParams {
+            refresh_token: false,
+        })
+        .await?;
+    let get_response: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(get_request_id)),
+    )
+    .await??;
+    let account: GetAccountResponse = to_response(get_response)?;
+    assert_eq!(
+        account,
+        GetAccountResponse {
+            account: Some(Account::Chatgpt {
+                email: "user@example.com".to_string(),
+                plan_type: AccountPlanType::Pro,
+            }),
+            requires_openai_auth: true,
+        }
+    );
+
     Ok(())
 }

@@ -76,8 +76,14 @@ pub(crate) enum AppEvent {
     CodexEvent(Event),
     /// Open the agent picker for switching active threads.
     OpenAgentPicker,
+    /// Open the saved account picker for switching auth files.
+    OpenAccountPicker,
     /// Switch the active thread to the selected agent.
     SelectAgentThread(ThreadId),
+    /// Switch the active auth file to the selected saved account.
+    SwitchAuthAccount {
+        account_id: String,
+    },
 
     /// Submit an op to the specified thread, regardless of current focus.
     SubmitThreadOp {

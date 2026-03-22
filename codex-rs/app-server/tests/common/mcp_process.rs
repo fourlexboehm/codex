@@ -43,6 +43,7 @@ use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
+use codex_app_server_protocol::ListAccountsParams;
 use codex_app_server_protocol::LoginAccountParams;
 use codex_app_server_protocol::MockExperimentalMethodParams;
 use codex_app_server_protocol::ModelListParams;
@@ -54,6 +55,7 @@ use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ReviewStartParams;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SkillsListParams;
+use codex_app_server_protocol::SwitchAccountParams;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadForkParams;
@@ -292,6 +294,22 @@ impl McpProcess {
     ) -> anyhow::Result<i64> {
         let params = Some(serde_json::to_value(params)?);
         self.send_request("account/read", params).await
+    }
+
+    /// Send an `account/list` JSON-RPC request.
+    pub async fn send_list_accounts_request(
+        &mut self,
+        cursor: Option<String>,
+        limit: Option<u32>,
+    ) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(ListAccountsParams { cursor, limit })?);
+        self.send_request("account/list", params).await
+    }
+
+    /// Send an `account/switch` JSON-RPC request.
+    pub async fn send_switch_account_request(&mut self, account_id: String) -> anyhow::Result<i64> {
+        let params = Some(serde_json::to_value(SwitchAccountParams { account_id })?);
+        self.send_request("account/switch", params).await
     }
 
     /// Send an `account/login/start` JSON-RPC request with ChatGPT auth tokens.

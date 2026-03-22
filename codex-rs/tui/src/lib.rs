@@ -1174,7 +1174,7 @@ fn get_login_status(config: &Config) -> LoginStatus {
             Ok(Some(auth)) => LoginStatus::AuthMode(auth.auth_mode()),
             Ok(None) => LoginStatus::NotAuthenticated,
             Err(err) => {
-                error!("Failed to read auth.json: {err}");
+                error!("Failed to read stored auth: {err}");
                 LoginStatus::NotAuthenticated
             }
         }

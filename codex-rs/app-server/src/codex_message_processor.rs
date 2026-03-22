@@ -65,6 +65,8 @@ use codex_app_server_protocol::GetConversationSummaryResponse;
 use codex_app_server_protocol::GitDiffToRemoteResponse;
 use codex_app_server_protocol::GitInfo as ApiGitInfo;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::ListAccountsParams;
+use codex_app_server_protocol::ListAccountsResponse;
 use codex_app_server_protocol::ListMcpServerStatusParams;
 use codex_app_server_protocol::ListMcpServerStatusResponse;
 use codex_app_server_protocol::LoginAccountParams;
@@ -100,6 +102,7 @@ use codex_app_server_protocol::ReviewStartParams;
 use codex_app_server_protocol::ReviewStartResponse;
 use codex_app_server_protocol::ReviewTarget as ApiReviewTarget;
 use codex_app_server_protocol::SandboxMode;
+use codex_app_server_protocol::SavedAccount;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequestResolvedNotification;
 use codex_app_server_protocol::SkillSummary;
@@ -107,6 +110,8 @@ use codex_app_server_protocol::SkillsConfigWriteParams;
 use codex_app_server_protocol::SkillsConfigWriteResponse;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
+use codex_app_server_protocol::SwitchAccountParams;
+use codex_app_server_protocol::SwitchAccountResponse;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadArchiveParams;
 use codex_app_server_protocol::ThreadArchiveResponse;
@@ -190,6 +195,7 @@ use codex_core::ThreadManager;
 use codex_core::ThreadSortKey as CoreThreadSortKey;
 use codex_core::auth::AuthMode as CoreAuthMode;
 use codex_core::auth::CLIENT_ID;
+use codex_core::auth::SavedAuthAccount as CoreSavedAuthAccount;
 use codex_core::auth::login_with_api_key;
 use codex_core::config::Config;
 use codex_core::config::ConfigOverrides;
@@ -829,8 +835,16 @@ impl CodexMessageProcessor {
                 self.cancel_login_v2(to_connection_request_id(request_id), params)
                     .await;
             }
+            ClientRequest::ListAccounts { request_id, params } => {
+                self.list_accounts_v2(to_connection_request_id(request_id), params)
+                    .await;
+            }
             ClientRequest::GetAccount { request_id, params } => {
                 self.get_account(to_connection_request_id(request_id), params)
+                    .await;
+            }
+            ClientRequest::SwitchAccount { request_id, params } => {
+                self.switch_account_v2(to_connection_request_id(request_id), params)
                     .await;
             }
             ClientRequest::GitDiffToRemote { request_id, params } => {
@@ -1332,6 +1346,76 @@ impl CodexMessageProcessor {
             }
             Err(error) => {
                 self.outgoing.send_error(request_id, error).await;
+            }
+        }
+    }
+
+    async fn list_accounts_v2(&self, request_id: ConnectionRequestId, params: ListAccountsParams) {
+        let response = self
+            .auth_manager
+            .list_saved_accounts()
+            .map_err(|err| saved_account_request_error("account/list failed", err))
+            .and_then(|accounts| list_accounts_response(accounts, params));
+
+        match response {
+            Ok(response) => {
+                self.outgoing.send_response(request_id, response).await;
+            }
+            Err(error) => {
+                self.outgoing.send_error(request_id, error).await;
+            }
+        }
+    }
+
+    async fn switch_account_v2(
+        &mut self,
+        request_id: ConnectionRequestId,
+        params: SwitchAccountParams,
+    ) {
+        {
+            let mut guard = self.active_login.lock().await;
+            if let Some(active) = guard.take() {
+                drop(active);
+            }
+        }
+
+        match self.auth_manager.switch_saved_account(&params.account_id) {
+            Ok(changed) => {
+                if changed {
+                    replace_cloud_requirements_loader(
+                        self.cloud_requirements.as_ref(),
+                        self.auth_manager.clone(),
+                        self.config.chatgpt_base_url.clone(),
+                        self.config.codex_home.clone(),
+                    );
+                    sync_default_client_residency_requirement(
+                        &self.cli_overrides,
+                        self.cloud_requirements.as_ref(),
+                    )
+                    .await;
+                    self.clear_plugin_related_caches();
+                    self.maybe_start_plugin_startup_tasks_for_latest_config()
+                        .await;
+                }
+
+                self.outgoing
+                    .send_response(request_id, SwitchAccountResponse {})
+                    .await;
+                if changed {
+                    self.outgoing
+                        .send_server_notification(ServerNotification::AccountUpdated(
+                            self.current_account_updated_notification(),
+                        ))
+                        .await;
+                }
+            }
+            Err(err) => {
+                self.outgoing
+                    .send_error(
+                        request_id,
+                        saved_account_request_error("account/switch failed", err),
+                    )
+                    .await;
             }
         }
     }
@@ -7793,6 +7877,75 @@ async fn sync_default_client_residency_requirement(
             error = %err,
             "failed to sync default client residency requirement after auth refresh"
         ),
+    }
+}
+
+fn list_accounts_response(
+    accounts: Vec<CoreSavedAuthAccount>,
+    params: ListAccountsParams,
+) -> Result<ListAccountsResponse, JSONRPCErrorError> {
+    let start = match params.cursor {
+        Some(cursor) => cursor.parse::<usize>().map_err(|_| JSONRPCErrorError {
+            code: INVALID_REQUEST_ERROR_CODE,
+            message: format!("invalid cursor: {cursor}"),
+            data: None,
+        })?,
+        None => 0,
+    };
+    let Some(remaining_accounts) = accounts.len().checked_sub(start) else {
+        return Err(JSONRPCErrorError {
+            code: INVALID_REQUEST_ERROR_CODE,
+            message: format!("cursor out of range: {start}"),
+            data: None,
+        });
+    };
+
+    let requested_limit = params.limit.unwrap_or(u32::MAX);
+    if requested_limit == 0 {
+        return Err(JSONRPCErrorError {
+            code: INVALID_PARAMS_ERROR_CODE,
+            message: "limit must be greater than 0".to_string(),
+            data: None,
+        });
+    }
+    let limit = requested_limit as usize;
+    let end = start.saturating_add(limit).min(accounts.len());
+    let next_cursor = (end < start + remaining_accounts).then(|| end.to_string());
+
+    Ok(ListAccountsResponse {
+        data: accounts
+            .into_iter()
+            .skip(start)
+            .take(limit)
+            .map(saved_account_to_api)
+            .collect(),
+        next_cursor,
+    })
+}
+
+fn saved_account_to_api(account: CoreSavedAuthAccount) -> SavedAccount {
+    SavedAccount {
+        id: account.id,
+        is_current: account.is_current,
+        auth_mode: account.auth_mode,
+        email: account.email,
+        workspace_id: account.workspace_id,
+        plan_type: account.plan_type,
+        api_key_suffix: account.api_key_suffix,
+    }
+}
+
+fn saved_account_request_error(message: &str, err: std::io::Error) -> JSONRPCErrorError {
+    let code = match err.kind() {
+        std::io::ErrorKind::InvalidInput
+        | std::io::ErrorKind::NotFound
+        | std::io::ErrorKind::Unsupported => INVALID_REQUEST_ERROR_CODE,
+        _ => INTERNAL_ERROR_CODE,
+    };
+    JSONRPCErrorError {
+        code,
+        message: format!("{message}: {err}"),
+        data: None,
     }
 }
 

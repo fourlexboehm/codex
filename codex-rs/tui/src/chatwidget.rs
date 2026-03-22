@@ -283,6 +283,7 @@ mod agent;
 use self::agent::spawn_agent;
 use self::agent::spawn_agent_from_existing;
 pub(crate) use self::agent::spawn_op_forwarder;
+mod account_picker;
 mod session_header;
 use self::session_header::SessionHeader;
 mod skills;
@@ -311,6 +312,7 @@ use chrono::Local;
 use codex_core::AuthManager;
 use codex_core::CodexAuth;
 use codex_core::ThreadManager;
+use codex_core::auth::SavedAuthAccount;
 use codex_file_search::FileMatch;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelPreset;
@@ -4377,6 +4379,10 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    pub(crate) fn open_account_picker(&mut self, accounts: &[SavedAuthAccount]) {
+        self.show_selection_view(account_picker::build_account_picker_params(accounts));
+    }
+
     pub(crate) fn no_modal_or_popup_active(&self) -> bool {
         self.bottom_pane.no_modal_or_popup_active()
     }
@@ -4684,6 +4690,9 @@ impl ChatWidget {
             }
             SlashCommand::Plugins => {
                 self.add_plugins_output();
+            }
+            SlashCommand::Account => {
+                self.app_event_tx.send(AppEvent::OpenAccountPicker);
             }
             SlashCommand::Rollout => {
                 if let Some(path) = self.rollout_path() {
@@ -5944,6 +5953,20 @@ impl ChatWidget {
         if let Some(handle) = self.rate_limit_poller.take() {
             handle.abort();
         }
+    }
+
+    pub(crate) fn refresh_auth_state(&mut self) {
+        self.plan_type = self
+            .auth_manager
+            .auth_cached()
+            .as_ref()
+            .and_then(CodexAuth::account_plan_type);
+        self.rate_limit_switch_prompt = RateLimitSwitchPromptState::Idle;
+        self.on_rate_limit_snapshot(/*snapshot*/ None);
+        self.bottom_pane
+            .set_connectors_enabled(self.connectors_enabled());
+        self.refresh_connectors(/*force_refetch*/ true);
+        self.prefetch_rate_limits();
     }
 
     pub(crate) fn refresh_connectors(&mut self, force_refetch: bool) {

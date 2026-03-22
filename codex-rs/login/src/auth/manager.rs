@@ -16,12 +16,17 @@ use std::sync::RwLock;
 use codex_app_server_protocol::AuthMode as ApiAuthMode;
 use codex_protocol::config_types::ForcedLoginMethod;
 
+use crate::auth::accounts::SavedAuthAccount;
+use crate::auth::accounts::list_saved_accounts as list_saved_accounts_from_files;
+use crate::auth::accounts::save_login_auth;
+use crate::auth::accounts::switch_saved_account as switch_saved_account_in_files;
 use crate::auth::error::RefreshTokenFailedError;
 use crate::auth::error::RefreshTokenFailedReason;
 pub use crate::auth::storage::AuthCredentialsStoreMode;
 pub use crate::auth::storage::AuthDotJson;
 use crate::auth::storage::AuthStorageBackend;
 use crate::auth::storage::create_auth_storage;
+use crate::auth::storage::load_managed_auth_with_storage;
 use crate::auth::util::try_parse_error_message;
 use crate::default_client::create_client;
 use crate::token_data::KnownPlan as InternalKnownPlan;
@@ -138,6 +143,7 @@ impl CodexAuth {
         codex_home: &Path,
         auth_dot_json: AuthDotJson,
         auth_credentials_store_mode: AuthCredentialsStoreMode,
+        auth_storage: Option<Arc<dyn AuthStorageBackend>>,
     ) -> std::io::Result<Self> {
         let auth_mode = auth_dot_json.resolved_mode();
         let client = create_client();
@@ -156,7 +162,8 @@ impl CodexAuth {
 
         match auth_mode {
             ApiAuthMode::Chatgpt => {
-                let storage = create_auth_storage(codex_home.to_path_buf(), storage_mode);
+                let storage = auth_storage
+                    .unwrap_or_else(|| create_auth_storage(codex_home.to_path_buf(), storage_mode));
                 Ok(Self::Chatgpt(ChatgptAuth { state, storage }))
             }
             ApiAuthMode::ChatgptAuthTokens => {
@@ -363,8 +370,8 @@ pub fn read_codex_api_key_from_env() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-/// Delete the auth.json file inside `codex_home` if it exists. Returns `Ok(true)`
-/// if a file was removed, `Ok(false)` if no auth file was present.
+/// Delete the active auth inside `codex_home` if it exists. Returns `Ok(true)`
+/// if a file was removed, `Ok(false)` if no active auth was present.
 pub fn logout(
     codex_home: &Path,
     auth_credentials_store_mode: AuthCredentialsStoreMode,
@@ -373,7 +380,7 @@ pub fn logout(
     storage.delete()
 }
 
-/// Writes an `auth.json` that contains only the API key.
+/// Writes a new active auth entry that contains only the API key.
 pub fn login_with_api_key(
     codex_home: &Path,
     api_key: &str,
@@ -385,7 +392,7 @@ pub fn login_with_api_key(
         tokens: None,
         last_refresh: None,
     };
-    save_auth(codex_home, &auth_dot_json, auth_credentials_store_mode)
+    save_login_auth(codex_home, &auth_dot_json, auth_credentials_store_mode)
 }
 
 /// Writes an in-memory auth payload for externally managed ChatGPT tokens.
@@ -420,7 +427,7 @@ pub fn save_auth(
 /// Load CLI auth data using the configured credential store backend.
 /// Returns `None` when no credentials are stored. This function is
 /// provided only for tests. Production code should not directly load
-/// from the auth.json storage. It should use the AuthManager abstraction
+/// from auth storage. It should use the AuthManager abstraction
 /// instead.
 pub fn load_auth_dot_json(
     codex_home: &Path,
@@ -523,7 +530,7 @@ fn logout_with_message(
     let removal_result = logout_all_stores(codex_home, auth_credentials_store_mode);
     let error_message = match removal_result {
         Ok(_) => message,
-        Err(err) => format!("{message}. Failed to remove auth.json: {err}"),
+        Err(err) => format!("{message}. Failed to remove active auth: {err}"),
     };
     Err(std::io::Error::other(error_message))
 }
@@ -546,7 +553,12 @@ fn load_auth(
     auth_credentials_store_mode: AuthCredentialsStoreMode,
 ) -> std::io::Result<Option<CodexAuth>> {
     let build_auth = |auth_dot_json: AuthDotJson, storage_mode| {
-        CodexAuth::from_auth_dot_json(codex_home, auth_dot_json, storage_mode)
+        CodexAuth::from_auth_dot_json(
+            codex_home,
+            auth_dot_json,
+            storage_mode,
+            /*auth_storage*/ None,
+        )
     };
 
     // API key via env var takes precedence over any other auth method.
@@ -571,13 +583,18 @@ fn load_auth(
     }
 
     // Fall back to the configured persistent store (file/keyring/auto) for managed auth.
-    let storage = create_auth_storage(codex_home.to_path_buf(), auth_credentials_store_mode);
-    let auth_dot_json = match storage.load()? {
-        Some(auth) => auth,
-        None => return Ok(None),
+    let Some((auth_dot_json, storage)) =
+        load_managed_auth_with_storage(codex_home.to_path_buf(), auth_credentials_store_mode)?
+    else {
+        return Ok(None);
     };
 
-    let auth = build_auth(auth_dot_json, auth_credentials_store_mode)?;
+    let auth = CodexAuth::from_auth_dot_json(
+        codex_home,
+        auth_dot_json,
+        auth_credentials_store_mode,
+        Some(storage),
+    )?;
     Ok(Some(auth))
 }
 
@@ -1007,12 +1024,12 @@ impl UnauthorizedRecovery {
     }
 }
 
-/// Central manager providing a single source of truth for auth.json derived
+/// Central manager providing a single source of truth for stored auth
 /// authentication data. It loads once (or on preference change) and then
 /// hands out cloned `CodexAuth` values so the rest of the program has a
 /// consistent snapshot.
 ///
-/// External modifications to `auth.json` will NOT be observed until
+/// External modifications to stored auth will NOT be observed until
 /// `reload()` is called explicitly. This matches the design goal of avoiding
 /// different parts of the program seeing inconsistent auth data mid‑run.
 #[derive(Debug)]
@@ -1100,7 +1117,7 @@ impl AuthManager {
         self.auth_cached()
     }
 
-    /// Force a reload of the auth information from auth.json. Returns
+    /// Force a reload of the auth information from storage. Returns
     /// whether the auth value changed.
     pub fn reload(&self) -> bool {
         tracing::info!("Reloading auth");
@@ -1301,8 +1318,8 @@ impl AuthManager {
         }
     }
 
-    /// Log out by deleting the on‑disk auth.json (if present). Returns Ok(true)
-    /// if a file was removed, Ok(false) if no auth file existed. On success,
+    /// Log out by deleting the on‑disk active auth (if present). Returns Ok(true)
+    /// if a file was removed, Ok(false) if no active auth existed. On success,
     /// reloads the in‑memory auth cache so callers immediately observe the
     /// unauthenticated state.
     pub fn logout(&self) -> std::io::Result<bool> {
@@ -1310,6 +1327,36 @@ impl AuthManager {
         // Always reload to clear any cached auth (even if file absent).
         self.reload();
         Ok(removed)
+    }
+
+    pub fn list_saved_accounts(&self) -> std::io::Result<Vec<SavedAuthAccount>> {
+        if self.is_external_auth_active() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "saved accounts are unavailable while external ChatGPT auth tokens are active",
+            ));
+        }
+
+        list_saved_accounts_from_files(&self.codex_home, self.auth_credentials_store_mode)
+    }
+
+    pub fn switch_saved_account(&self, account_id: &str) -> std::io::Result<bool> {
+        if self.is_external_auth_active() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "saved accounts are unavailable while external ChatGPT auth tokens are active",
+            ));
+        }
+
+        let changed = switch_saved_account_in_files(
+            &self.codex_home,
+            self.auth_credentials_store_mode,
+            account_id,
+        )?;
+        if changed {
+            self.reload();
+        }
+        Ok(changed)
     }
 
     pub fn get_api_auth_mode(&self) -> Option<ApiAuthMode> {

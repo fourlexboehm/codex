@@ -1,0 +1,10 @@
+---
+source: tui_app_server/src/chatwidget/tests.rs
+expression: popup
+---
+  Accounts
+  Select an account to make its auth file active.
+
+› 1. current@example.com (current)  file auth-20260322T040506Z-cafebabe.json | ChatGPT | plan Pro
+                                    | workspace org-current
+  2. API key (...1234)              file auth-20260322T010203Z-deadbeef.json | API key

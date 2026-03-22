@@ -9,6 +9,7 @@ use anyhow::Result;
 use base64::Engine;
 use codex_login::ServerOptions;
 use codex_login::auth::AuthCredentialsStoreMode;
+use codex_login::load_auth_dot_json;
 use codex_login::run_login_server;
 use core_test_support::skip_if_no_network;
 use tempfile::tempdir;
@@ -139,17 +140,44 @@ async fn end_to_end_login_flow_persists_auth_json() -> Result<()> {
     // Wait for server shutdown
     server.block_until_done().await?;
 
-    // Validate auth.json
-    let auth_path = codex_home.join("auth.json");
-    let data = std::fs::read_to_string(&auth_path)?;
-    let json: serde_json::Value = serde_json::from_str(&data)?;
+    let auth = load_auth_dot_json(&codex_home, AuthCredentialsStoreMode::File)?
+        .expect("active auth should be written");
     // The following assert is here because of the old oauth flow that exchanges tokens for an
     // API key. See obtain_api_key in server.rs for details. Once we remove this old mechanism
     // from the code, this test should be updated to expect that the API key is no longer present.
-    assert_eq!(json["OPENAI_API_KEY"], "access-123");
-    assert_eq!(json["tokens"]["access_token"], "access-123");
-    assert_eq!(json["tokens"]["refresh_token"], "refresh-123");
-    assert_eq!(json["tokens"]["account_id"], chatgpt_account_id);
+    assert_eq!(auth.openai_api_key.as_deref(), Some("access-123"));
+    let tokens = auth.tokens.expect("tokens should be written");
+    assert_eq!(tokens.access_token, "access-123");
+    assert_eq!(tokens.refresh_token, "refresh-123");
+    assert_eq!(tokens.account_id.as_deref(), Some(chatgpt_account_id));
+
+    let auth_files: Vec<std::path::PathBuf> = std::fs::read_dir(&codex_home)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|file_name| file_name.to_str())
+                .is_some_and(|file_name| {
+                    file_name.starts_with("auth-") && file_name.ends_with(".json")
+                })
+        })
+        .collect();
+    assert_eq!(
+        auth_files.len(),
+        2,
+        "expected active and archived auth files"
+    );
+    let archived_path = auth_files
+        .iter()
+        .find(|path| {
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(path).expect("read saved auth file"),
+            )
+            .is_ok_and(|json| json["OPENAI_API_KEY"] == "sk-stale")
+        })
+        .expect("archived stale auth file");
+    let archived_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(archived_path)?)?;
+    assert_eq!(archived_json["OPENAI_API_KEY"], "sk-stale");
 
     // Stop mock issuer
     drop(issuer_handle);
@@ -190,10 +218,9 @@ async fn creates_missing_codex_home_dir() -> Result<()> {
 
     server.block_until_done().await?;
 
-    let auth_path = codex_home.join("auth.json");
     assert!(
-        auth_path.exists(),
-        "auth.json should be created even if parent dir was missing"
+        load_auth_dot_json(&codex_home, AuthCredentialsStoreMode::File)?.is_some(),
+        "active auth should be created even if parent dir was missing"
     );
     Ok(())
 }
@@ -246,10 +273,9 @@ async fn forced_chatgpt_workspace_id_mismatch_blocks_login() -> Result<()> {
     let err = result.unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
 
-    let auth_path = codex_home.join("auth.json");
     assert!(
-        !auth_path.exists(),
-        "auth.json should not be written when the workspace mismatches"
+        load_auth_dot_json(&codex_home, AuthCredentialsStoreMode::File)?.is_none(),
+        "active auth should not be written when the workspace mismatches"
     );
 
     Ok(())
@@ -313,10 +339,9 @@ async fn oauth_access_denied_missing_entitlement_blocks_login_with_clear_error()
         "terminal error should also tell the user what to do next"
     );
 
-    let auth_path = codex_home.join("auth.json");
     assert!(
-        !auth_path.exists(),
-        "auth.json should not be written when oauth callback is denied"
+        load_auth_dot_json(&codex_home, AuthCredentialsStoreMode::File)?.is_none(),
+        "active auth should not be written when oauth callback is denied"
     );
 
     Ok(())
@@ -392,10 +417,9 @@ async fn oauth_access_denied_unknown_reason_uses_generic_error_page() -> Result<
         "terminal error should preserve generic oauth details"
     );
 
-    let auth_path = codex_home.join("auth.json");
     assert!(
-        !auth_path.exists(),
-        "auth.json should not be written when oauth callback is denied"
+        load_auth_dot_json(&codex_home, AuthCredentialsStoreMode::File)?.is_none(),
+        "active auth should not be written when oauth callback is denied"
     );
 
     Ok(())

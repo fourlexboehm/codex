@@ -19,6 +19,8 @@ use crate::test_backend::VT100Backend;
 use crate::tui::FrameRequester;
 use assert_matches::assert_matches;
 use codex_core::CodexAuth;
+use codex_core::auth::AuthMode as LoginAuthMode;
+use codex_core::auth::SavedAuthAccount;
 use codex_core::config::ApprovalsReviewer;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
@@ -5626,6 +5628,44 @@ async fn collab_slash_command_opens_picker_and_updates_mode() {
             panic!("expected Op::UserTurn with code collab mode, got {other:?}")
         }
     }
+}
+
+#[tokio::test]
+async fn account_slash_command_emits_open_account_picker_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.dispatch_command(SlashCommand::Account);
+
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenAccountPicker));
+}
+
+#[tokio::test]
+async fn account_picker_popup_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+
+    chat.open_account_picker(&[
+        SavedAuthAccount {
+            id: "auth-20260322T040506Z-cafebabe.json".to_string(),
+            auth_mode: LoginAuthMode::Chatgpt,
+            email: Some("current@example.com".to_string()),
+            workspace_id: Some("org-current".to_string()),
+            plan_type: Some(PlanType::Pro),
+            api_key_suffix: None,
+            is_current: true,
+        },
+        SavedAuthAccount {
+            id: "auth-20260322T010203Z-deadbeef.json".to_string(),
+            auth_mode: LoginAuthMode::ApiKey,
+            email: None,
+            workspace_id: None,
+            plan_type: None,
+            api_key_suffix: Some("1234".to_string()),
+            is_current: false,
+        },
+    ]);
+
+    let popup = render_bottom_popup(&chat, 100);
+    assert_snapshot!("account_picker_popup", popup);
 }
 
 #[tokio::test]

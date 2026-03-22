@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use crate::auth::AuthCredentialsStoreMode;
 use crate::auth::AuthDotJson;
-use crate::auth::save_auth;
+use crate::auth::save_login_auth;
 use crate::default_client::originator;
 use crate::pkce::PkceCodes;
 use crate::pkce::generate_pkce;
@@ -776,7 +776,7 @@ pub(crate) async fn persist_tokens_async(
             tokens: Some(tokens),
             last_refresh: Some(Utc::now()),
         };
-        save_auth(&codex_home, &auth, auth_credentials_store_mode)
+        save_login_auth(&codex_home, &auth, auth_credentials_store_mode)
     })
     .await
     .map_err(|e| io::Error::other(format!("persist task failed: {e}")))?

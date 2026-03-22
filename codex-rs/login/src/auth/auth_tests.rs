@@ -1,6 +1,6 @@
 use super::*;
-use crate::auth::storage::FileAuthStorage;
-use crate::auth::storage::get_auth_file;
+use crate::auth::list_saved_accounts;
+use crate::auth::switch_saved_account;
 use crate::token_data::IdTokenInfo;
 use crate::token_data::KnownPlan as InternalKnownPlan;
 use crate::token_data::PlanType as InternalPlanType;
@@ -67,12 +67,39 @@ fn login_with_api_key_overwrites_existing_auth_json() {
     super::login_with_api_key(dir.path(), "sk-new", AuthCredentialsStoreMode::File)
         .expect("login_with_api_key should succeed");
 
-    let storage = FileAuthStorage::new(dir.path().to_path_buf());
-    let auth = storage
-        .try_read_auth_json(&auth_path)
-        .expect("auth.json should parse");
+    let auth = super::load_auth_dot_json(dir.path(), AuthCredentialsStoreMode::File)
+        .expect("auth should load")
+        .expect("active auth should exist");
     assert_eq!(auth.openai_api_key.as_deref(), Some("sk-new"));
     assert!(auth.tokens.is_none(), "tokens should be cleared");
+
+    let auth_files: Vec<std::path::PathBuf> = std::fs::read_dir(dir.path())
+        .expect("read codex home")
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|file_name| file_name.to_str())
+                .is_some_and(|file_name| {
+                    file_name.starts_with("auth-") && file_name.ends_with(".json")
+                })
+        })
+        .collect();
+    assert_eq!(
+        auth_files.len(),
+        2,
+        "expected active and archived auth files"
+    );
+
+    let stale_count = auth_files
+        .iter()
+        .filter(|path| {
+            let auth: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(path).expect("read saved auth file"))
+                    .expect("parse saved auth file");
+            auth["OPENAI_API_KEY"] == "sk-old"
+        })
+        .count();
+    assert_eq!(stale_count, 1, "expected exactly one archived stale auth");
 }
 
 #[test]
@@ -163,11 +190,104 @@ fn logout_removes_auth_file() -> Result<(), std::io::Error> {
         last_refresh: None,
     };
     super::save_auth(dir.path(), &auth_dot_json, AuthCredentialsStoreMode::File)?;
-    let auth_file = get_auth_file(dir.path());
-    assert!(auth_file.exists());
+    assert!(has_active_auth(dir.path()));
     assert!(logout(dir.path(), AuthCredentialsStoreMode::File)?);
-    assert!(!auth_file.exists());
+    assert!(!has_active_auth(dir.path()));
+    assert_eq!(
+        list_saved_accounts(dir.path(), AuthCredentialsStoreMode::File)?,
+        Vec::new()
+    );
     Ok(())
+}
+
+#[test]
+fn list_saved_accounts_includes_current_and_archived_auth_files() {
+    let codex_home = tempdir().unwrap();
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some("org_123".to_string()),
+        },
+        codex_home.path(),
+    )
+    .expect("seed chatgpt auth");
+    login_with_api_key(
+        codex_home.path(),
+        "sk-current",
+        AuthCredentialsStoreMode::File,
+    )
+    .expect("seed api key auth");
+
+    let accounts =
+        list_saved_accounts(codex_home.path(), AuthCredentialsStoreMode::File).expect("accounts");
+    assert_eq!(accounts.len(), 2);
+    assert_saved_auth_file_id(&accounts[0].id);
+    assert_eq!(accounts[0].auth_mode, ApiAuthMode::ApiKey);
+    assert_eq!(accounts[0].email, None);
+    assert_eq!(accounts[0].workspace_id, None);
+    assert_eq!(accounts[0].plan_type, None);
+    assert_eq!(accounts[0].api_key_suffix.as_deref(), Some("rent"));
+    assert!(accounts[0].is_current);
+    assert_saved_auth_file_id(&accounts[1].id);
+    assert_ne!(accounts[0].id, accounts[1].id);
+    assert_eq!(accounts[1].auth_mode, ApiAuthMode::Chatgpt);
+    assert_eq!(accounts[1].email.as_deref(), Some("user@example.com"));
+    assert_eq!(accounts[1].workspace_id.as_deref(), Some("org_123"));
+    assert_eq!(accounts[1].plan_type, Some(AccountPlanType::Pro));
+    assert_eq!(accounts[1].api_key_suffix, None);
+    assert!(!accounts[1].is_current);
+}
+
+#[test]
+fn switch_saved_account_swaps_active_and_archived_auth_files() {
+    let codex_home = tempdir().unwrap();
+    write_auth_file(
+        AuthFileParams {
+            openai_api_key: None,
+            chatgpt_plan_type: Some("pro".to_string()),
+            chatgpt_account_id: Some("org_123".to_string()),
+        },
+        codex_home.path(),
+    )
+    .expect("seed chatgpt auth");
+    login_with_api_key(
+        codex_home.path(),
+        "sk-current",
+        AuthCredentialsStoreMode::File,
+    )
+    .expect("seed api key auth");
+
+    let accounts =
+        list_saved_accounts(codex_home.path(), AuthCredentialsStoreMode::File).expect("accounts");
+    let archived_chatgpt = accounts
+        .iter()
+        .find(|account| account.auth_mode == ApiAuthMode::Chatgpt)
+        .expect("archived chatgpt account");
+
+    assert!(
+        switch_saved_account(
+            codex_home.path(),
+            AuthCredentialsStoreMode::File,
+            &archived_chatgpt.id,
+        )
+        .expect("switch account"),
+    );
+
+    let active_auth = load_auth_dot_json(codex_home.path(), AuthCredentialsStoreMode::File)
+        .expect("load active auth")
+        .expect("active auth should exist");
+    assert_eq!(active_auth.resolved_mode(), ApiAuthMode::Chatgpt);
+
+    let switched_accounts =
+        list_saved_accounts(codex_home.path(), AuthCredentialsStoreMode::File).expect("accounts");
+    assert_eq!(switched_accounts.len(), 2);
+    assert_eq!(switched_accounts[0].id, archived_chatgpt.id);
+    assert_eq!(switched_accounts[0].auth_mode, ApiAuthMode::Chatgpt);
+    assert!(switched_accounts[0].is_current);
+    assert_saved_auth_file_id(&switched_accounts[1].id);
+    assert_eq!(switched_accounts[1].auth_mode, ApiAuthMode::ApiKey);
+    assert_eq!(switched_accounts[1].api_key_suffix.as_deref(), Some("rent"));
 }
 
 #[test]
@@ -204,7 +324,6 @@ struct AuthFileParams {
 }
 
 fn write_auth_file(params: AuthFileParams, codex_home: &Path) -> std::io::Result<String> {
-    let auth_file = get_auth_file(codex_home);
     // Create a minimal valid JWT for the id_token field.
     #[derive(Serialize)]
     struct Header {
@@ -240,17 +359,18 @@ fn write_auth_file(params: AuthFileParams, codex_home: &Path) -> std::io::Result
     let signature_b64 = b64(b"sig");
     let fake_jwt = format!("{header_b64}.{payload_b64}.{signature_b64}");
 
-    let auth_json_data = json!({
-        "OPENAI_API_KEY": params.openai_api_key,
-        "tokens": {
-            "id_token": fake_jwt,
-            "access_token": "test-access-token",
-            "refresh_token": "test-refresh-token"
-        },
-        "last_refresh": Utc::now(),
-    });
-    let auth_json = serde_json::to_string_pretty(&auth_json_data)?;
-    std::fs::write(auth_file, auth_json)?;
+    let auth_dot_json = AuthDotJson {
+        auth_mode: None,
+        openai_api_key: params.openai_api_key,
+        tokens: Some(TokenData {
+            id_token: parse_chatgpt_jwt_claims(&fake_jwt).map_err(std::io::Error::other)?,
+            access_token: "test-access-token".to_string(),
+            refresh_token: "test-refresh-token".to_string(),
+            account_id: None,
+        }),
+        last_refresh: Some(Utc::now()),
+    };
+    save_auth(codex_home, &auth_dot_json, AuthCredentialsStoreMode::File)?;
     Ok(fake_jwt)
 }
 
@@ -310,8 +430,8 @@ async fn enforce_login_restrictions_logs_out_for_method_mismatch() {
         super::enforce_login_restrictions(&config).expect_err("expected method mismatch to error");
     assert!(err.to_string().contains("ChatGPT login is required"));
     assert!(
-        !codex_home.path().join("auth.json").exists(),
-        "auth.json should be removed on mismatch"
+        !has_active_auth(codex_home.path()),
+        "active auth should be removed on mismatch"
     );
 }
 
@@ -335,8 +455,8 @@ async fn enforce_login_restrictions_logs_out_for_workspace_mismatch() {
         .expect_err("expected workspace mismatch to error");
     assert!(err.to_string().contains("workspace org_mine"));
     assert!(
-        !codex_home.path().join("auth.json").exists(),
-        "auth.json should be removed on mismatch"
+        !has_active_auth(codex_home.path()),
+        "active auth should be removed on mismatch"
     );
 }
 
@@ -358,8 +478,8 @@ async fn enforce_login_restrictions_allows_matching_workspace() {
 
     super::enforce_login_restrictions(&config).expect("matching workspace should succeed");
     assert!(
-        codex_home.path().join("auth.json").exists(),
-        "auth.json should remain when restrictions pass"
+        has_active_auth(codex_home.path()),
+        "active auth should remain when restrictions pass"
     );
 }
 
@@ -374,9 +494,22 @@ async fn enforce_login_restrictions_allows_api_key_if_login_method_not_set_but_f
 
     super::enforce_login_restrictions(&config).expect("matching workspace should succeed");
     assert!(
-        codex_home.path().join("auth.json").exists(),
-        "auth.json should remain when restrictions pass"
+        has_active_auth(codex_home.path()),
+        "active auth should remain when restrictions pass"
     );
+}
+
+fn assert_saved_auth_file_id(account_id: &str) {
+    assert!(
+        account_id.starts_with("auth-") && account_id.ends_with(".json"),
+        "expected saved auth file id, got {account_id}"
+    );
+}
+
+fn has_active_auth(codex_home: &Path) -> bool {
+    load_auth_dot_json(codex_home, AuthCredentialsStoreMode::File)
+        .expect("auth should load")
+        .is_some()
 }
 
 #[tokio::test]

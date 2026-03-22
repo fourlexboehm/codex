@@ -10,6 +10,9 @@ use crate::app_event_sender::AppEventSender;
 use crate::app_server_session::AppServerSession;
 use crate::app_server_session::AppServerStartedThread;
 use crate::app_server_session::ThreadSessionState;
+use crate::app_server_session::app_server_rate_limit_snapshots_to_core;
+use crate::app_server_session::model_preset_from_api_model;
+use crate::app_server_session::status_account_display_from_account;
 use crate::bottom_pane::ApprovalRequest;
 use crate::bottom_pane::FeedbackAudience;
 use crate::bottom_pane::McpServerElicitationFormRequest;
@@ -48,6 +51,7 @@ use crate::update_action::UpdateAction;
 use crate::version::CODEX_CLI_VERSION;
 use codex_ansi_escape::ansi_escape_line;
 use codex_app_server_client::AppServerRequestHandle;
+use codex_app_server_protocol::Account;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::ConfigLayerSource;
 use codex_app_server_protocol::ListMcpServerStatusParams;
@@ -2484,6 +2488,105 @@ impl App {
         });
     }
 
+    async fn open_account_picker(&mut self, app_server: &mut AppServerSession) {
+        match app_server.list_accounts().await {
+            Ok(response) => {
+                if response.data.is_empty() {
+                    self.chat_widget.add_info_message(
+                        "No saved accounts found.".to_string(),
+                        /*hint*/ None,
+                    );
+                    return;
+                }
+
+                self.chat_widget
+                    .open_account_picker(response.data.as_slice());
+            }
+            Err(err) => {
+                self.chat_widget
+                    .add_error_message(format!("Failed to list saved accounts: {err}"));
+            }
+        }
+    }
+
+    async fn switch_auth_account(&mut self, app_server: &mut AppServerSession, account_id: String) {
+        if let Err(err) = app_server.switch_account(account_id).await {
+            self.chat_widget
+                .add_error_message(format!("Failed to switch account: {err}"));
+            return;
+        }
+
+        self.chat_widget.refresh_after_account_switch();
+
+        match app_server.get_account(/*refresh_token*/ false).await {
+            Ok(response) => {
+                let has_chatgpt_account =
+                    matches!(response.account.as_ref(), Some(Account::Chatgpt { .. }));
+                let plan_type = match response.account.as_ref() {
+                    Some(Account::Chatgpt { plan_type, .. }) => Some(*plan_type),
+                    Some(Account::ApiKey {}) | None => None,
+                };
+                self.chat_widget.update_account_state(
+                    status_account_display_from_account(response.account.as_ref()),
+                    plan_type,
+                    has_chatgpt_account,
+                );
+
+                if has_chatgpt_account {
+                    match app_server.get_account_rate_limits().await {
+                        Ok(rate_limits) => {
+                            for snapshot in app_server_rate_limit_snapshots_to_core(rate_limits) {
+                                self.chat_widget.on_rate_limit_snapshot(Some(snapshot));
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                error = %err,
+                                "failed to refresh rate limits after account switch"
+                            );
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to refresh account state after account switch"
+                );
+            }
+        }
+
+        match app_server.model_list(/*include_hidden*/ true).await {
+            Ok(response) => {
+                let model_catalog = Arc::new(ModelCatalog::new(
+                    response
+                        .data
+                        .into_iter()
+                        .map(model_preset_from_api_model)
+                        .collect(),
+                    self.collaboration_modes_config(),
+                ));
+                self.model_catalog = model_catalog.clone();
+                self.chat_widget.set_model_catalog(model_catalog);
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to refresh model catalog after account switch"
+                );
+            }
+        }
+    }
+
+    fn collaboration_modes_config(&self) -> CollaborationModesConfig {
+        CollaborationModesConfig {
+            default_mode_request_user_input: self
+                .config
+                .features
+                .enabled(Feature::DefaultModeRequestUserInput),
+        }
+    }
+
     /// Updates cached picker metadata and then mirrors any visible-label change into the footer.
     ///
     /// These two writes stay paired so the picker rows and contextual footer continue to describe
@@ -4336,8 +4439,14 @@ impl App {
             AppEvent::OpenAgentPicker => {
                 self.open_agent_picker().await;
             }
+            AppEvent::OpenAccountPicker => {
+                self.open_account_picker(app_server).await;
+            }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread(tui, app_server, thread_id).await?;
+            }
+            AppEvent::SwitchAuthAccount { account_id } => {
+                self.switch_auth_account(app_server, account_id).await;
             }
             AppEvent::OpenSkillsList => {
                 self.chat_widget.open_skills_list();

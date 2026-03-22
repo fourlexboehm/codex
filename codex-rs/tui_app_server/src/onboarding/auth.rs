@@ -528,7 +528,8 @@ impl AuthModeWidget {
                 "Use your own OpenAI API key for usage-based billing".bold(),
             ]),
             "".into(),
-            "  Paste or type your API key below. It will be stored locally in auth.json.".into(),
+            "  Paste or type your API key below. It will be stored locally for this Codex install."
+                .into(),
             "".into(),
         ];
         if state.prepopulated_from_env {

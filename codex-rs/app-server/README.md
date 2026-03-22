@@ -1243,7 +1243,7 @@ $demo-app Pull the latest updates from the team.
 
 ## Auth endpoints
 
-The JSON-RPC auth/account surface exposes request/response methods plus server-initiated notifications (no `id`). Use these to determine auth state, start or cancel logins, logout, and inspect ChatGPT rate limits.
+The JSON-RPC auth/account surface exposes request/response methods plus server-initiated notifications (no `id`). Use these to determine auth state, start or cancel logins, manage saved logins, logout, and inspect ChatGPT rate limits.
 
 ### Authentication modes
 
@@ -1251,6 +1251,9 @@ Codex supports these authentication modes. The current mode is surfaced in `acco
 
 - **API key (`apiKey`)**: Caller supplies an OpenAI API key via `account/login/start` with `type: "apiKey"`. The API key is saved and used for API requests.
 - **ChatGPT managed (`chatgpt`)** (recommended): Codex owns the ChatGPT OAuth flow and refresh tokens. Start via `account/login/start` with `type: "chatgpt"`; Codex persists tokens to disk and refreshes them automatically.
+- **ChatGPT external tokens (`chatgptAuthTokens`)**: An embedding host app supplies ChatGPT access tokens via `account/login/start` with `type: "chatgptAuthTokens"`. This mode is unstable and intended for host-managed auth flows.
+
+When `cli_auth_credentials_store = "file"`, each successful login keeps the previous `auth*.json` file as a saved account instead of overwriting it. Use `account/list` and `account/switch` to inspect or reactivate those saved auth files.
 
 ### API Overview
 
@@ -1258,8 +1261,10 @@ Codex supports these authentication modes. The current mode is surfaced in `acco
 - `account/login/start` — begin login (`apiKey`, `chatgpt`).
 - `account/login/completed` (notify) — emitted when a login attempt finishes (success or error).
 - `account/login/cancel` — cancel a pending ChatGPT login by `loginId`.
+- `account/list` — list saved auth files for file-backed credentials; current account is returned first.
+- `account/switch` — make a saved auth file active; triggers `account/updated` when auth changes.
 - `account/logout` — sign out; triggers `account/updated`.
-- `account/updated` (notify) — emitted whenever auth mode changes (`authMode`: `apikey`, `chatgpt`, or `null`) and includes the current ChatGPT `planType` when available.
+- `account/updated` (notify) — emitted whenever auth mode changes (`authMode`: `apikey`, `chatgpt`, `chatgptAuthTokens`, or `null`) and includes the current ChatGPT `planType` when available.
 - `account/rateLimits/read` — fetch ChatGPT rate limits; updates arrive via `account/rateLimits/updated` (notify).
 - `account/rateLimits/updated` (notify) — emitted whenever a user's ChatGPT rate limits change.
 - `mcpServer/oauthLogin/completed` (notify) — emitted after a `mcpServer/oauth/login` flow finishes for a server; payload includes `{ name, success, error? }`.
@@ -1306,6 +1311,7 @@ Field notes:
    { "method": "account/login/completed", "params": { "loginId": null, "success": true, "error": null } }
    { "method": "account/updated", "params": { "authMode": "apikey", "planType": null } }
    ```
+4. With file-backed credentials, each login creates a new `auth-*.json` account file and makes it active. Previously saved accounts remain available for `account/switch`.
 
 ### 3) Log in with ChatGPT (browser flow)
 
@@ -1336,11 +1342,62 @@ Field notes:
 { "method": "account/updated", "params": { "authMode": null, "planType": null } }
 ```
 
-### 6) Rate limits (ChatGPT)
+### 6) List saved accounts
 
 ```json
-{ "method": "account/rateLimits/read", "id": 6 }
-{ "id": 6, "result": { "rateLimits": { "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 }, "secondary": null } } }
+{ "method": "account/list", "id": 6, "params": { "cursor": null, "limit": null } }
+{
+  "id": 6,
+  "result": {
+    "data": [
+      {
+        "id": "auth-20260322T040506Z-cafebabe.json",
+        "isCurrent": true,
+        "authMode": "apikey",
+        "email": null,
+        "workspaceId": null,
+        "planType": null,
+        "apiKeySuffix": "rent"
+      },
+      {
+        "id": "auth-20260322T010203Z-deadbeef.json",
+        "isCurrent": false,
+        "authMode": "chatgpt",
+        "email": "user@example.com",
+        "workspaceId": "org-chatgpt",
+        "planType": "pro",
+        "apiKeySuffix": null
+      }
+    ],
+    "nextCursor": null
+  }
+}
+```
+
+Field notes:
+
+- `id` is the auth file name to pass back to `account/switch`.
+- `cursor` and `limit` provide standard cursor pagination for longer saved-account lists.
+- `apiKeySuffix` is only populated for API-key accounts.
+
+### 7) Switch saved account
+
+```json
+{ "method": "account/switch", "id": 7, "params": { "accountId": "auth-20260322T010203Z-deadbeef.json" } }
+{ "id": 7, "result": {} }
+{ "method": "account/updated", "params": { "authMode": "chatgpt", "planType": "pro" } }
+```
+
+Field notes:
+
+- `accountId` must be a file id previously returned by `account/list`.
+- Switching updates the active account pointer to the selected saved auth file.
+
+### 8) Rate limits (ChatGPT)
+
+```json
+{ "method": "account/rateLimits/read", "id": 8 }
+{ "id": 8, "result": { "rateLimits": { "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 }, "secondary": null } } }
 { "method": "account/rateLimits/updated", "params": { "rateLimits": { … } } }
 ```
 

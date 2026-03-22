@@ -40,10 +40,10 @@ async fn file_storage_save_persists_auth_dot_json() -> anyhow::Result<()> {
         last_refresh: Some(Utc::now()),
     };
 
-    let file = get_auth_file(codex_home.path());
     storage
         .save(&auth_dot_json)
         .context("failed to save auth file")?;
+    let file = active_auth_file(&storage)?;
 
     let same_auth_dot_json = storage
         .try_read_auth_json(&file)
@@ -61,13 +61,14 @@ fn file_storage_delete_removes_auth_file() -> anyhow::Result<()> {
         tokens: None,
         last_refresh: None,
     };
-    let storage = create_auth_storage(dir.path().to_path_buf(), AuthCredentialsStoreMode::File);
-    storage.save(&auth_dot_json)?;
-    assert!(dir.path().join("auth.json").exists());
     let storage = FileAuthStorage::new(dir.path().to_path_buf());
+    storage.save(&auth_dot_json)?;
+    let auth_file = active_auth_file(&storage)?;
+    assert!(auth_file.exists());
     let removed = storage.delete()?;
     assert!(removed);
-    assert!(!dir.path().join("auth.json").exists());
+    assert!(!auth_file.exists());
+    assert!(storage.resolved_auth_file()?.is_none());
     Ok(())
 }
 
@@ -93,7 +94,7 @@ fn ephemeral_storage_save_load_delete_is_in_memory_only() -> anyhow::Result<()> 
     assert!(removed);
     let loaded = storage.load()?;
     assert_eq!(None, loaded);
-    assert!(!get_auth_file(dir.path()).exists());
+    assert!(!active_auth_exists(dir.path())?);
     Ok(())
 }
 
@@ -107,8 +108,9 @@ where
 {
     let key = compute_key()?;
     mock_keyring.save(KEYRING_SERVICE, &key, "{}")?;
-    let auth_file = get_auth_file(codex_home);
-    std::fs::write(&auth_file, "stale")?;
+    let file_storage = FileAuthStorage::new(codex_home.to_path_buf());
+    file_storage.save(&auth_with_prefix("stale"))?;
+    let auth_file = active_auth_file(&file_storage)?;
     Ok((key, auth_file))
 }
 
@@ -131,17 +133,17 @@ fn assert_keyring_saved_auth_and_removed_fallback(
     key: &str,
     codex_home: &Path,
     expected: &AuthDotJson,
-) {
+) -> anyhow::Result<()> {
     let saved_value = mock_keyring
         .saved_value(key)
         .expect("keyring entry should exist");
     let expected_serialized = serde_json::to_string(expected).expect("serialize expected auth");
     assert_eq!(saved_value, expected_serialized);
-    let auth_file = get_auth_file(codex_home);
     assert!(
-        !auth_file.exists(),
-        "fallback auth.json should be removed after keyring save"
+        !active_auth_exists(codex_home)?,
+        "fallback auth file should be removed after keyring save"
     );
+    Ok(())
 }
 
 fn id_token_with_prefix(prefix: &str) -> IdTokenInfo {
@@ -227,8 +229,8 @@ fn keyring_auth_storage_save_persists_and_removes_fallback_file() -> anyhow::Res
         codex_home.path().to_path_buf(),
         Arc::new(mock_keyring.clone()),
     );
-    let auth_file = get_auth_file(codex_home.path());
-    std::fs::write(&auth_file, "stale")?;
+    let file_storage = FileAuthStorage::new(codex_home.path().to_path_buf());
+    file_storage.save(&auth_with_prefix("stale"))?;
     let auth = AuthDotJson {
         auth_mode: Some(AuthMode::Chatgpt),
         openai_api_key: None,
@@ -244,7 +246,7 @@ fn keyring_auth_storage_save_persists_and_removes_fallback_file() -> anyhow::Res
     storage.save(&auth)?;
 
     let key = compute_store_key(codex_home.path())?;
-    assert_keyring_saved_auth_and_removed_fallback(&mock_keyring, &key, codex_home.path(), &auth);
+    assert_keyring_saved_auth_and_removed_fallback(&mock_keyring, &key, codex_home.path(), &auth)?;
     Ok(())
 }
 
@@ -270,7 +272,7 @@ fn keyring_auth_storage_delete_removes_keyring_and_file() -> anyhow::Result<()> 
     );
     assert!(
         !auth_file.exists(),
-        "fallback auth.json should be removed after keyring delete"
+        "fallback auth file should be removed after keyring delete"
     );
     Ok(())
 }
@@ -352,7 +354,7 @@ fn auto_auth_storage_save_prefers_keyring() -> anyhow::Result<()> {
         &key,
         codex_home.path(),
         &expected,
-    );
+    )?;
     Ok(())
 }
 
@@ -370,10 +372,9 @@ fn auto_auth_storage_save_falls_back_when_keyring_errors() -> anyhow::Result<()>
     let auth = auth_with_prefix("fallback");
     storage.save(&auth)?;
 
-    let auth_file = get_auth_file(codex_home.path());
     assert!(
-        auth_file.exists(),
-        "fallback auth.json should be created when keyring save fails"
+        active_auth_exists(codex_home.path())?,
+        "fallback auth file should be created when keyring save fails"
     );
     let saved = storage
         .file_storage
@@ -409,7 +410,19 @@ fn auto_auth_storage_delete_removes_keyring_and_file() -> anyhow::Result<()> {
     );
     assert!(
         !auth_file.exists(),
-        "fallback auth.json should be removed after delete"
+        "fallback auth file should be removed after delete"
     );
     Ok(())
+}
+
+fn active_auth_file(storage: &FileAuthStorage) -> anyhow::Result<PathBuf> {
+    storage
+        .resolved_auth_file()?
+        .context("active auth file should exist")
+}
+
+fn active_auth_exists(codex_home: &Path) -> anyhow::Result<bool> {
+    Ok(FileAuthStorage::new(codex_home.to_path_buf())
+        .resolved_auth_file()?
+        .is_some())
 }
