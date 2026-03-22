@@ -944,7 +944,8 @@ enabled = false
     let config = load_config(tmp.path(), &repo_root).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
         .list_marketplaces_for_config(&config, &[AbsolutePathBuf::try_from(repo_root).unwrap()])
-        .unwrap();
+        .unwrap()
+        .marketplaces;
 
     let marketplace = marketplaces
         .into_iter()
@@ -1039,7 +1040,8 @@ enabled = true
     let config = load_config(tmp.path(), &repo_root).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
         .list_marketplaces_for_config(&config, &[AbsolutePathBuf::try_from(repo_root).unwrap()])
-        .unwrap();
+        .unwrap()
+        .marketplaces;
 
     assert_eq!(marketplaces, Vec::new());
 }
@@ -1086,7 +1088,8 @@ plugins = true
     let config = load_config(tmp.path(), &repo_root).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
         .list_marketplaces_for_config(&config, &[AbsolutePathBuf::try_from(repo_root).unwrap()])
-        .unwrap();
+        .unwrap()
+        .marketplaces;
 
     let marketplace = marketplaces
         .into_iter()
@@ -1227,7 +1230,8 @@ plugins = true
     let config = load_config(tmp.path(), tmp.path()).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
         .list_marketplaces_for_config(&config, &[])
-        .unwrap();
+        .unwrap()
+        .marketplaces;
 
     let curated_marketplace = marketplaces
         .into_iter()
@@ -1332,7 +1336,8 @@ enabled = false
                 AbsolutePathBuf::try_from(repo_b_root).unwrap(),
             ],
         )
-        .unwrap();
+        .unwrap()
+        .marketplaces;
 
     let repo_a_marketplace = marketplaces
         .iter()
@@ -1435,7 +1440,8 @@ enabled = true
     let config = load_config(tmp.path(), &repo_root).await;
     let marketplaces = PluginsManager::new(tmp.path().to_path_buf())
         .list_marketplaces_for_config(&config, &[AbsolutePathBuf::try_from(repo_root).unwrap()])
-        .unwrap();
+        .unwrap()
+        .marketplaces;
 
     let marketplace = marketplaces
         .into_iter()
@@ -1578,6 +1584,7 @@ enabled = true
     let curated_marketplace = manager
         .list_marketplaces_for_config(&synced_config, &[])
         .unwrap()
+        .marketplaces
         .into_iter()
         .find(|marketplace| marketplace.name == OPENAI_CURATED_MARKETPLACE_NAME)
         .unwrap();

@@ -16,6 +16,21 @@
       },
       "type": "object"
     },
+    "MarketplaceLoadErrorInfo": {
+      "properties": {
+        "marketplacePath": {
+          "$ref": "#/definitions/AbsolutePathBuf"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "marketplacePath",
+        "message"
+      ],
+      "type": "object"
+    },
     "PluginAuthPolicy": {
       "enum": [
         "ON_INSTALL",
@@ -243,6 +258,14 @@
       "default": [],
       "items": {
         "type": "string"
+      },
+      "type": "array"
+    },
+    "marketplaceLoadErrors": {
+      "default": [],
+      "description": "Marketplace files that failed to load. These entries are omitted from `marketplaces` so clients can fail open while still surfacing the issue.",
+      "items": {
+        "$ref": "#/definitions/MarketplaceLoadErrorInfo"
       },
       "type": "array"
     },
