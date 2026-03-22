@@ -64,17 +64,31 @@ use codex_execpolicy::NetworkRuleProtocol;
 use codex_execpolicy::Policy;
 use codex_network_proxy::NetworkProxyConfig;
 use codex_otel::TelemetryAuthMode;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::Settings;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DeveloperInstructions;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::ConversationAudioParams;
 use codex_protocol::protocol::RealtimeAudioFrame;
 use codex_protocol::protocol::Submission;
 use codex_protocol::protocol::W3cTraceContext;
+use core_test_support::context_snapshot;
+use core_test_support::context_snapshot::ContextSnapshotOptions;
+use core_test_support::context_snapshot::ContextSnapshotRenderMode;
+use core_test_support::responses::ev_completed;
+use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::sse;
+use core_test_support::responses::start_mock_server;
+use core_test_support::test_codex::test_codex;
 use core_test_support::tracing::install_test_tracing;
+use core_test_support::wait_for_event;
 use opentelemetry::trace::TraceContextExt;
 use opentelemetry::trace::TraceId;
 use std::path::Path;
@@ -1148,66 +1162,113 @@ async fn record_initial_history_reconstructs_forked_transcript() {
     assert_eq!(expected, history.raw_items());
 }
 
-#[tokio::test]
-async fn fork_startup_context_then_first_turn_diff_snapshot() {
-    let (session, turn_context) = make_session_and_context().await;
-    let expected_history = vec![user_message("forked seed")];
-    let rollout_items = vec![
-        RolloutItem::ResponseItem(expected_history[0].clone()),
-        RolloutItem::TurnContext(turn_context.to_turn_context_item()),
-    ];
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fork_startup_context_then_first_turn_diff_snapshot() -> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let _initial_request = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+    )
+    .await;
+    let first_forked_request = mount_sse_once(
+        &server,
+        sse(vec![ev_response_created("resp-2"), ev_completed("resp-2")]),
+    )
+    .await;
 
-    session
-        .record_initial_history(InitialHistory::Forked(rollout_items))
-        .await;
+    let mut builder = test_codex().with_config(|config| {
+        config.permissions.approval_policy =
+            codex_config::Constrained::allow_any(AskForApproval::OnRequest);
+    });
+    let initial = builder.build(&server).await?;
+    let rollout_path = initial
+        .session_configured
+        .rollout_path
+        .clone()
+        .expect("rollout path");
 
-    let history_after_fork = session.clone_history().await;
-    let startup_injection = &history_after_fork.raw_items()[expected_history.len()..];
+    initial
+        .codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "fork seed".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await?;
+    wait_for_event(&initial.codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    let next_model = if turn_context.model_info.slug == "gpt-5.1" {
-        "gpt-5"
-    } else {
-        "gpt-5.1"
+    let mut fork_config = initial.config.clone();
+    fork_config.permissions.approval_policy =
+        codex_config::Constrained::allow_any(AskForApproval::UnlessTrusted);
+    let forked = initial
+        .thread_manager
+        .fork_thread(usize::MAX, fork_config, rollout_path, false, None)
+        .await?;
+
+    let collaboration_mode = CollaborationMode {
+        mode: ModeKind::Plan,
+        settings: Settings {
+            model: forked.session_configured.model.clone(),
+            reasoning_effort: None,
+            developer_instructions: Some("Fork turn collaboration instructions.".to_string()),
+        },
     };
-    let first_turn_context = turn_context
-        .with_model(next_model.to_string(), &session.services.models_manager)
-        .await;
+    forked
+        .thread
+        .submit(Op::OverrideTurnContext {
+            cwd: None,
+            approval_policy: Some(AskForApproval::Never),
+            approvals_reviewer: None,
+            sandbox_policy: None,
+            windows_sandbox_level: None,
+            model: None,
+            effort: None,
+            summary: None,
+            service_tier: None,
+            collaboration_mode: Some(collaboration_mode),
+            personality: None,
+        })
+        .await?;
 
-    let history_len_after_fork = history_after_fork.raw_items().len();
-    session
-        .record_context_updates_and_set_reference_context_item(&first_turn_context)
-        .await;
-    let history_after_first_turn = session.clone_history().await;
-    let first_turn_updates = &history_after_first_turn.raw_items()[history_len_after_fork..];
+    forked
+        .thread
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "after fork".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await?;
+    wait_for_event(&forked.thread, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
 
-    let format_item_kinds = |items: &[ResponseItem]| {
-        let lines = items
-            .iter()
-            .enumerate()
-            .map(|(idx, item)| match item {
-                ResponseItem::Message { role, .. } => format!("{idx:02}:message/{role}"),
-                other => {
-                    let item = serde_json::to_value(other).expect("serialize snapshot item");
-                    let item_type = item
-                        .get("type")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("<missing_type>");
-                    format!("{idx:02}:{item_type}")
-                }
-            })
-            .collect::<Vec<_>>();
-        if lines.is_empty() {
-            "<none>".to_string()
-        } else {
-            lines.join("\n")
-        }
-    };
-
-    let snapshot = format!(
-        "Scenario: Fork startup context injection followed by first-turn diff injection\n\n## Fork Startup Injection\n{}\n\n## First Turn Context Updates\n{}",
-        format_item_kinds(startup_injection),
-        format_item_kinds(first_turn_updates),
+    let request = first_forked_request.single_request();
+    let snapshot = context_snapshot::format_labeled_requests_snapshot(
+        "First request after fork when fork startup changes approval policy and the first forked turn changes approval policy again and enters plan mode.",
+        &[("First Forked Turn Request", &request)],
+        &ContextSnapshotOptions::default()
+            .render_mode(ContextSnapshotRenderMode::FullText)
+            .strip_capability_instructions()
+            .strip_agents_md_user_context(),
     );
+    let snapshot = snapshot
+        .lines()
+        .map(|line| {
+            let mut line = line.to_string();
+            for (tag, replacement) in [("cwd", "<CWD>"), ("current_date", "<CURRENT_DATE>")] {
+                let open_tag = format!("<{tag}>");
+                let close_tag = format!("</{tag}>");
+                if let (Some(start), Some(end)) = (line.find(&open_tag), line.find(&close_tag)) {
+                    let start = start + open_tag.len();
+                    line = format!("{}{replacement}{}", &line[..start], &line[end..]);
+                }
+            }
+            line
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let mut settings = insta::Settings::clone_current();
     settings.set_snapshot_path("snapshots");
@@ -1218,6 +1279,8 @@ async fn fork_startup_context_then_first_turn_diff_snapshot() {
             snapshot
         );
     });
+
+    Ok(())
 }
 
 #[tokio::test]
