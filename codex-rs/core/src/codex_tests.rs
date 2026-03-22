@@ -1151,7 +1151,11 @@ async fn record_initial_history_reconstructs_forked_transcript() {
 #[tokio::test]
 async fn fork_startup_context_then_first_turn_diff_snapshot() {
     let (session, turn_context) = make_session_and_context().await;
-    let (rollout_items, expected_history) = sample_rollout(&session, &turn_context).await;
+    let expected_history = vec![user_message("forked seed")];
+    let rollout_items = vec![
+        RolloutItem::ResponseItem(expected_history[0].clone()),
+        RolloutItem::TurnContext(turn_context.to_turn_context_item()),
+    ];
 
     session
         .record_initial_history(InitialHistory::Forked(rollout_items))
