@@ -6,8 +6,7 @@ expression: snapshot
 Scenario: Fork startup context injection followed by first-turn diff injection
 
 ## Fork Startup Injection
-00:message/developer
-01:message/user
+<none>
 
 ## First Turn Context Updates
 00:message/developer

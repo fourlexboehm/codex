@@ -1132,18 +1132,12 @@ async fn recompute_token_usage_updates_model_context_window() {
 #[tokio::test]
 async fn record_initial_history_reconstructs_forked_transcript() {
     let (session, turn_context) = make_session_and_context().await;
-    let (rollout_items, mut expected) = sample_rollout(&session, &turn_context).await;
+    let (rollout_items, expected) = sample_rollout(&session, &turn_context).await;
 
     session
         .record_initial_history(InitialHistory::Forked(rollout_items))
         .await;
 
-    let reconstruction_turn = session.new_default_turn().await;
-    expected.extend(
-        session
-            .build_initial_context(reconstruction_turn.as_ref())
-            .await,
-    );
     let history = session.state.lock().await.clone_history();
     assert_eq!(expected, history.raw_items());
 }
@@ -1221,7 +1215,7 @@ async fn fork_startup_context_then_first_turn_diff_snapshot() {
 }
 
 #[tokio::test]
-async fn record_initial_history_forked_advances_previous_turn_settings_to_current_baseline() {
+async fn record_initial_history_forked_preserves_previous_turn_settings_until_first_turn() {
     let (session, turn_context) = make_session_and_context().await;
     let previous_model = "forked-rollout-model";
     let previous_context_item = TurnContextItem {
@@ -1264,7 +1258,7 @@ async fn record_initial_history_forked_advances_previous_turn_settings_to_curren
                 text_elements: Vec::new(),
             },
         )),
-        RolloutItem::TurnContext(previous_context_item),
+        RolloutItem::TurnContext(previous_context_item.clone()),
         RolloutItem::EventMsg(EventMsg::TurnComplete(
             codex_protocol::protocol::TurnCompleteEvent {
                 turn_id,
@@ -1280,9 +1274,45 @@ async fn record_initial_history_forked_advances_previous_turn_settings_to_curren
     assert_eq!(
         session.previous_turn_settings().await,
         Some(PreviousTurnSettings {
+            model: previous_model.to_string(),
+            realtime_active: Some(turn_context.realtime_active),
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(session.reference_context_item().await)
+            .expect("serialize forked reference context item"),
+        serde_json::to_value(Some(previous_context_item.clone()))
+            .expect("serialize expected forked reference context item")
+    );
+
+    let history_before_update = session.clone_history().await.raw_items().to_vec();
+    let update_items = session
+        .build_settings_update_items(Some(&previous_context_item), &turn_context)
+        .await;
+    assert!(!update_items.is_empty());
+
+    session
+        .record_context_updates_and_set_reference_context_item(&turn_context)
+        .await;
+
+    let mut expected_history = history_before_update;
+    expected_history.extend(update_items);
+    assert_eq!(
+        session.clone_history().await.raw_items().to_vec(),
+        expected_history
+    );
+    assert_eq!(
+        session.previous_turn_settings().await,
+        Some(PreviousTurnSettings {
             model: turn_context.model_info.slug.clone(),
             realtime_active: Some(turn_context.realtime_active),
         })
+    );
+    assert_eq!(
+        serde_json::to_value(session.reference_context_item().await)
+            .expect("serialize current reference context item"),
+        serde_json::to_value(Some(turn_context.to_turn_context_item()))
+            .expect("serialize expected current reference context item")
     );
 }
 
