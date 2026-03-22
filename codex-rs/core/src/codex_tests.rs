@@ -1149,6 +1149,74 @@ async fn record_initial_history_reconstructs_forked_transcript() {
 }
 
 #[tokio::test]
+async fn fork_startup_context_then_first_turn_diff_snapshot() {
+    let (session, turn_context) = make_session_and_context().await;
+    let (rollout_items, expected_history) = sample_rollout(&session, &turn_context).await;
+
+    session
+        .record_initial_history(InitialHistory::Forked(rollout_items))
+        .await;
+
+    let history_after_fork = session.clone_history().await;
+    let startup_injection = &history_after_fork.raw_items()[expected_history.len()..];
+
+    let next_model = if turn_context.model_info.slug == "gpt-5.1" {
+        "gpt-5"
+    } else {
+        "gpt-5.1"
+    };
+    let first_turn_context = turn_context
+        .with_model(next_model.to_string(), &session.services.models_manager)
+        .await;
+
+    let history_len_after_fork = history_after_fork.raw_items().len();
+    session
+        .record_context_updates_and_set_reference_context_item(&first_turn_context)
+        .await;
+    let history_after_first_turn = session.clone_history().await;
+    let first_turn_updates = &history_after_first_turn.raw_items()[history_len_after_fork..];
+
+    let format_item_kinds = |items: &[ResponseItem]| {
+        let lines = items
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| match item {
+                ResponseItem::Message { role, .. } => format!("{idx:02}:message/{role}"),
+                other => {
+                    let item_type = serde_json::to_value(other)
+                        .expect("serialize snapshot item")
+                        .get("type")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("<missing_type>");
+                    format!("{idx:02}:{item_type}")
+                }
+            })
+            .collect::<Vec<_>>();
+        if lines.is_empty() {
+            "<none>".to_string()
+        } else {
+            lines.join("\n")
+        }
+    };
+
+    let snapshot = format!(
+        "Scenario: Fork startup context injection followed by first-turn diff injection\n\n## Fork Startup Injection\n{}\n\n## First Turn Context Updates\n{}",
+        format_item_kinds(startup_injection),
+        format_item_kinds(first_turn_updates),
+    );
+
+    let mut settings = insta::Settings::clone_current();
+    settings.set_snapshot_path("snapshots");
+    settings.set_prepend_module_to_snapshot(false);
+    settings.bind(|| {
+        insta::assert_snapshot!(
+            "codex_core__codex_tests__fork_startup_context_then_first_turn_diff",
+            snapshot
+        );
+    });
+}
+
+#[tokio::test]
 async fn record_initial_history_forked_advances_previous_turn_settings_to_current_baseline() {
     let (session, turn_context) = make_session_and_context().await;
     let previous_model = "forked-rollout-model";
